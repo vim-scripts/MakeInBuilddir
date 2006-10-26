@@ -2,7 +2,7 @@
 "  autoconf and libtool
 "  Maintainer:  sylvain.joyeux@m4x.org
 "  Version:     0.1 for vim 7.0+
-"  URL:		
+"  URL:		http://www.vim.org/scripts/script.php?script_id=1688
 "
 " Documentation:
 "   Let's consider separate source and build directories
@@ -29,6 +29,10 @@
 "	Debug execname - start a libtool-wrapped gdb (for libtool generated
 "		executables)
 "
+" Changes:
+"  * 0.3
+"    added completion for the -C option in Make
+"    in Compile, check that we have a file in the current buffer
 
 if exists("loaded_makebuilddir")
     finish
@@ -61,14 +65,19 @@ function s:FindTopdir()
     return s:FindDir('configure', 'file')
 endfunction
 
-function s:Setup()
-    let cwd = getcwd()
+function s:Setup(...)
+    let origdir = getcwd()
+    let basedir = expand('%:p:h')
 
-    let basedir=expand('%:p:h')
     try
 	execute "lcd" basedir
 	let topdir = s:FindTopdir()
-	let subdir=substitute(basedir, topdir . '\?', "", "")
+
+	if a:0 == 0
+	    let subdir = substitute(basedir, topdir . '\?', "", "")
+	else
+	    let subdir = a:1
+	endif
 
 	execute "lcd" topdir
 	while 1
@@ -84,10 +93,6 @@ function s:Setup()
 	    echohl WarningMsg
 	    if !isdirectory(builddir)
 		echo builddir . " does not exist or is not a directory\n"
-	    elseif !filereadable(builddir . "/Makefile")
-		echo builddir . "/Makefile does not exist\n"
-	    elseif !filereadable(builddir . "/config.status")
-		echo builddir . "/config.status does not exist\n"
 	    elseif !isdirectory(subdir_full)
 		echo subdir_full . " does not exist or is not a directory\n"
 	    elseif ( filereadable(subdir . "/Makefile.in") || filereadable(subdir . "/Makefile") ) && !filereadable(subdir_full . "/Makefile") 
@@ -100,33 +105,34 @@ function s:Setup()
 	    echohl None
 	endwhile
     finally
-	execute "lcd" cwd
+	execute "lcd" origdir
     endtry
 
-    return [subdir, topdir]
+    execute "lcd" join([topdir, g:builddir, subdir], '/')
+    return [subdir, topdir, origdir]
 endfunction
 
 function s:FunctionInBuilddir(command, use_subdir, ...)
-    let [subdir, topdir]=s:Setup()
-    let curdir=getcwd()
-
-    let newdir=topdir . "/" . g:builddir
-    if a:use_subdir
-        let newdir=newdir . "/" . subdir
+    if a:use_subdir == 1
+	let [subdir, topdir, origdir]=s:Setup()
+    else
+	let [subdir, topdir, origdir]=s:Setup('')
     endif
 
     try
-	execute "lcd" newdir
 	execute a:command join(a:000, ' ')
     finally
-	execute "lcd" curdir
+	execute "lcd" origdir
     endtry
 endfunction
 
 function s:CompileInBuilddir()
-    let file=expand("%:t")
-    let file=substitute(file, "\\.\\a*$", ".lo", "")
+    let file=expand("%:t:r") . '.lo'
     let filedir=expand("%:h")
+    if file == ".lo"
+	echoerr "no file in current buffer"
+	return
+    endif
 
     try
 	let curdir=getcwd()
@@ -139,13 +145,25 @@ endfunction
 
 function s:ChooseBuilddir()
     unlet! g:builddir
-    call s:Setup()
-    echo getcwd() . "/" . g:builddir
+    let [a, b, origdir] = s:Setup('')
+    execute "lcd" origdir
 endfunction 
 
+function s:DirList(ArgLead, CmdLine, CursorPos)
+    if strpart(a:CmdLine, a:CursorPos - strlen(a:ArgLead) - 3, 2) == "-C"
+	let [subdir, topdir, origdir] = s:Setup()
+
+	try
+	    return filter(split(glob(a:ArgLead . '*')), "isdirectory(v:val) && filereadable(v:val . '/Makefile')")
+	finally
+	    execute "lcd" origdir
+	endtry
+    endif
+endfunction
+
 command Compile :call s:CompileInBuilddir()
-command -nargs=* Make :call s:FunctionInBuilddir("make", (exists("makeall") ? ! makeall : 1), <q-args>)
-command -nargs=* Makeall :call s:FunctionInBuilddir("make", 0, <q-args>)
+command -nargs=* -complete=customlist,s:DirList Make :call s:FunctionInBuilddir("make", (exists("makeall") ? ! makeall : 1), <f-args>)
+command -nargs=* Makeall :call s:FunctionInBuilddir("make", 0, <f-args>)
 command -nargs=1 Run :call s:FunctionInBuilddir("! " . <args>, 1)
 command -nargs=1 Debug :call s:FunctionInBuilddir("! libtool --mode=execute gdb " . <args>, 1)
 command Reconfigure :call s:FunctionInBuilddir("! ./config.status --recheck && ./config.status", 0)
